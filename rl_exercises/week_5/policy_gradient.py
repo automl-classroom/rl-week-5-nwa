@@ -71,7 +71,9 @@ class Policy(nn.Module):
 
         # TODO: Define two linear layers: self.fc1 and self.fc2
         # self.fc1 should map from self.state_dim to hidden_size
+        self.fc1 = nn.Linear(self.state_dim, hidden_size)
         # self.fc2 should map from hidden_size to self.n_actions
+        self.fc2 = nn.Linear(hidden_size, self.n_actions)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -88,9 +90,12 @@ class Policy(nn.Module):
             Softmax probabilities over actions, shape (batch_size, n_actions).
         """
         # TODO: Apply fc1 followed by ReLU (Flatten input if needed)
+        x = self.fc1(x)
+        x = nn.functional.relu(x)
         # TODO: Apply fc2 to get logits
+        x = self.fc2(x)
         # TODO: Return softmax over logits along the last dimension
-        pass
+        return nn.functional.softmax(x, dim=-1)
 
 
 class REINFORCEAgent(AbstractAgent):
@@ -162,9 +167,16 @@ class REINFORCEAgent(AbstractAgent):
             Contains 'log_prob' if in training mode; empty if evaluating.
         """
         # TODO: Pass state through the policy network to get action probabilities
+        state_tensor = torch.Tensor(state)
+        out = self.policy(state_tensor)
         # If evaluate is True, return the action with highest probability
+        if evaluate:
+            return int(torch.argmax(out)), {}
         # Otherwise, sample from the action distribution and return the log-probability as a key in the dictionary (Hint: use torch.distributions.Categorical)
-        return 0, {}  # Placeholder return value
+        else:
+            m = torch.distributions.Categorical(out)
+            action = m.sample()
+            return int(action), {"log_prob": m.log_prob(action)}  # Placeholder return value
 
     def compute_returns(self, rewards: List[float]) -> torch.Tensor:
         """
@@ -182,11 +194,16 @@ class REINFORCEAgent(AbstractAgent):
         """
 
         # TODO: Initialize running return R = 0
+        running_return = 0
+        return_list = []
         # TODO: Iterate over rewards and compute the return-to-go:
         #       - Update R = r + gamma * R
         #       - Insert R at the beginning of the returns list
+        for reward in reversed(rewards):
+            running_return = reward + self.gamma * running_return
+            return_list.insert(0, running_return)
         # TODO: Convert the list of returns to a torch.Tensor and return
-        pass
+        return torch.Tensor(return_list)
 
     def update_agent(
         self,
@@ -215,8 +232,9 @@ class REINFORCEAgent(AbstractAgent):
         returns_t = self.compute_returns(rewards)
 
         # TODO: Normalize returns with mean and standard deviation,
+        dev, mean = torch.std_mean(returns_t, unbiased=False)
         # and add 1e-8 to the denominator to avoid division by zero
-        norm_returns = returns_t
+        norm_returns = (returns_t - mean)/(dev + 1e-8)
 
         lp_tensor = torch.stack(log_probs)
         loss = -torch.sum(lp_tensor * norm_returns)
@@ -280,11 +298,23 @@ class REINFORCEAgent(AbstractAgent):
         self.policy.eval()
         returns: List[float] = []  # noqa: F841
         # TODO: rollout num_episodes in eval_env and aggregate undiscounted returns across episodes
-
+        for episode in range(num_episodes):
+            state, _ = eval_env.reset() # reset env
+            done = False
+            episode_return = 0.0
+            
+            while not done:
+                action, _ = self.predict_action(state, evaluate=True)  # Deterministic action
+                state, reward, term, trunc, _ = eval_env.step(action)
+                episode_return += reward  # Undiscounted sum
+                done = term or trunc
+                
+            returns.append(episode_return)
+                
         self.policy.train()  # Set back to training mode
 
         # TODO: Return the mean and std of the returns across episodes
-        return 0.0, 0.0
+        return np.mean(returns), np.std(returns)
 
     def train(
         self,
